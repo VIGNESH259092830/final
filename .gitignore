@@ -1,0 +1,21 @@
+# Ignore binaries
+*.exe
+*.msi
+
+# Electron build
+electron/dist/
+electron/out/
+electron/win-unpacked/
+
+# Node
+node_modules/
+electron/node_modules/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Environment secrets
+.env
+*.env

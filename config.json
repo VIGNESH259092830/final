@@ -1,0 +1,27 @@
+{
+    "version": "1.0.0",
+    "name": "Interview Helper",
+    "database": {
+        "host": "localhost",
+        "port": 3307,
+        "user": "interview_helper",
+        "password": "interview123",
+        "name": "interview_helper_db"
+    },
+    "paths": {
+        "python": "runtime/python310/python.exe",
+        "node": "runtime/nodejs/node.exe",
+        "mysql": "runtime/mysql/bin/mysqld.exe",
+        "data_dir": "data"
+    },
+    "auto_start": {
+        "backend": true,
+        "database": true,
+        "frontend": true
+    },
+    "settings": {
+        "minimize_to_tray": true,
+        "auto_start_windows": true,
+        "theme": "dark"
+    }
+}

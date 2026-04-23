@@ -1,0 +1,99 @@
+
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interview Helper</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: transparent; overflow: hidden; cursor: pointer; }
+        .circle-container { width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; }
+        .circle { width: 50px; height: 50px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3); transition: all 0.3s ease; border: 2px solid white; position: relative; overflow: hidden; }
+        .circle:hover { transform: scale(1.1); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); }
+        .circle:active { transform: scale(0.95); }
+        .circle-content { color: white; font-size: 24px; font-weight: bold; user-select: none; }
+        .cancel-button { position: absolute; top: -5px; right: -5px; width: 20px; height: 20px; background: #ff4757; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 12px; cursor: pointer; border: 2px solid white; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2); opacity: 0; transition: opacity 0.3s ease; z-index: 10; }
+        .circle-container:hover .cancel-button { opacity: 1; }
+        .cancel-button:hover { background: #ff3838; transform: scale(1.1); }
+        @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(102, 126, 234, 0); } 100% { box-shadow: 0 0 0 0 rgba(102, 126, 234, 0); } }
+        .pulse { animation: pulse 2s infinite; }
+    </style>
+</head>
+<body>
+    <div class="circle-container" id="circleContainer">
+        <div class="circle" id="circle">
+            <div class="circle-content">A1</div>  <!-- CHANGED FROM "AI" TO "A1" -->
+            <div class="cancel-button" id="cancelButton">×</div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const circle = document.getElementById('circle');
+            const cancelButton = document.getElementById('cancelButton');
+            const circleContainer = document.getElementById('circleContainer');
+            
+            // Add pulse animation
+            circle.classList.add('pulse');
+            
+            // Click circle to restore main window
+            circle.addEventListener('click', function(e) {
+                if (e.target !== cancelButton) {
+                    window.electronAPI.restoreWindow();
+                }
+            });
+            
+            // Click cancel button to close application - NO CONFIRMATION
+            cancelButton.addEventListener('click', function(e) {
+                e.stopPropagation();
+                window.electronAPI.closeWindow();  // DIRECTLY CLOSE, NO ALERT
+            });
+            
+            // Make circle draggable
+            let isDragging = false;
+            let currentX;
+            let currentY;
+            let initialX;
+            let initialY;
+            let xOffset = 0;
+            let yOffset = 0;
+            
+            circleContainer.addEventListener("mousedown", dragStart);
+            document.addEventListener("mousemove", drag);
+            document.addEventListener("mouseup", dragEnd);
+            
+            function dragStart(e) {
+                if (e.target === cancelButton) return;
+                initialX = e.clientX - xOffset;
+                initialY = e.clientY - yOffset;
+                if (e.target === circle) { isDragging = true; }
+            }
+            
+            function drag(e) {
+                if (isDragging) {
+                    e.preventDefault();
+                    currentX = e.clientX - initialX;
+                    currentY = e.clientY - initialY;
+                    xOffset = currentX;
+                    yOffset = currentY;
+                    setTranslate(currentX, currentY, circleContainer);
+                    const rect = circleContainer.getBoundingClientRect();
+                    window.electronAPI.moveCircle(e.screenX - rect.width/2, e.screenY - rect.height/2);
+                }
+            }
+            
+            function dragEnd(e) {
+                initialX = currentX;
+                initialY = currentY;
+                isDragging = false;
+            }
+            
+            function setTranslate(xPos, yPos, el) {
+                el.style.transform = `translate3d(${xPos}px, ${yPos}px, 0)`;
+            }
+        });
+    </script>
+</body>
+</html>
