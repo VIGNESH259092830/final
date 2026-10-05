@@ -1,64 +1,60 @@
 # setup_db.py
-import mysql.connector
-from dotenv import load_dotenv
+import sqlite3
 import os
+from dotenv import load_dotenv
 
 load_dotenv()
+
+DB_PATH = os.getenv("DB_PATH", "interview_assistant.db")
 
 def setup_database():
     """Create database and tables"""
     try:
-        # Connect to MySQL server
-        conn = mysql.connector.connect(
-            host=os.getenv("DB_HOST"),
-            port=int(os.getenv("DB_PORT")),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD")
-        )
-        
+        # Connect to SQLite database (creates file if not exists)
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Create database if not exists
-        cursor.execute(f"CREATE DATABASE IF NOT EXISTS {os.getenv('DB_NAME')}")
-        print(f"✅ Database '{os.getenv('DB_NAME')}' created or already exists")
-        
-        # Switch to database
-        cursor.execute(f"USE {os.getenv('DB_NAME')}")
+        print(f"✅ Database created at: {DB_PATH}")
         
         # Create sessions table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
-            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             company VARCHAR(255) NOT NULL,
             job_description TEXT NOT NULL,
-            resume_text LONGTEXT NOT NULL,
+            resume_text TEXT NOT NULL,
             extra_context TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_company (company),
-            INDEX idx_created_at (created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
         """)
+        
+        # Create indexes for sessions
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_company ON sessions(company)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON sessions(created_at)")
         
         # Create qa_messages table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS qa_messages (
-            id BIGINT AUTO_INCREMENT PRIMARY KEY,
-            session_id BIGINT NOT NULL,
-            role ENUM('question','answer') NOT NULL,
-            content LONGTEXT NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            role TEXT CHECK(role IN ('question', 'answer')) NOT NULL,
+            content TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-            INDEX idx_session_id (session_id),
-            INDEX idx_created_at (created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )
         """)
         
+        # Create indexes for qa_messages
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_id ON qa_messages(session_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_qa_created_at ON qa_messages(created_at)")
+        
+        conn.commit()
         cursor.close()
         conn.close()
         
         print("✅ Tables created successfully")
         
-    except mysql.connector.Error as err:
+    except sqlite3.Error as err:
         print(f"❌ Database setup error: {err}")
         raise err
 

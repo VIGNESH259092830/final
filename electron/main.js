@@ -1,7 +1,9 @@
+// main.js - COMPLETE
 const { LOGO_BASE64 } = require('./logo.js');
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, screen, globalShortcut, desktopCapturer, session } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
+const fs = require('fs');
 
 let mainWindow = null;
 let circleWindow = null;
@@ -9,10 +11,45 @@ let tray = null;
 let pythonServer = null;
 let isMinimized = false;
 
-/* ======================================================
-   MAIN INVISIBLE WINDOW (LOCKED)
-   ====================================================== */
+let lastScreenshot = null;
+let screenshotHistory = [];
+let autoAnswerEnabled = false;
+let isProcessingScreenshot = false;
+
+/* ================= FIND MAIN.PY ================= */
+function findMainPy() {
+    console.log('🔍 Searching for main.py...');
+    const possiblePaths = [
+        path.join(__dirname, '..', 'app', 'main.py'),
+        'D:\\rithish\\completed\\app\\main.py',
+        path.join(__dirname, '..', 'main.py'),
+        path.join(__dirname, 'main.py'),
+        'D:/rithish/completed/app/main.py'
+    ];
+    for (const p of possiblePaths) {
+        try {
+            const n = path.normalize(p);
+            if (fs.existsSync(n)) {
+                console.log(`✅ Found main.py at: ${n}`);
+                return n;
+            }
+        } catch (_) {}
+    }
+    console.error('❌ main.py not found!');
+    return null;
+}
+
+/* ================= MAIN WINDOW ================= */
 function createWindow() {
+    session.defaultSession.setPermissionRequestHandler((wc, permission, cb) => {
+        if (permission === 'screen' || permission === 'media' || permission === 'desktopCapture') {
+            cb(true);
+        } else cb(false);
+    });
+    session.defaultSession.setPermissionCheckHandler((wc, permission) => {
+        return permission === 'screen' || permission === 'media' || permission === 'desktopCapture';
+    });
+
     mainWindow = new BrowserWindow({
         width: 1600,
         height: 600,
@@ -22,81 +59,40 @@ function createWindow() {
         transparent: true,
         backgroundColor: '#00000000',
         show: true,
-
-        // 🔴 NEVER appear in taskbar / Alt+Tab
         skipTaskbar: true,
-
-        // 🔥 MUST stay above all apps
         alwaysOnTop: true,
-
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
-            preload: path.join(__dirname, 'preload.js')
+            preload: path.join(__dirname, 'preload.js'),
+            webSecurity: true
         }
     });
 
-    // 🔐 Invisible to screen sharing (Zoom / Teams / OBS)
     mainWindow.setContentProtection(true);
-
-    // 🔥 Strongest Windows always-on-top level
     mainWindow.setAlwaysOnTop(true, 'screen-saver');
-
     mainWindow.loadFile('index.html');
+
+    mainWindow.setIgnoreMouseEvents(false);
 
     createTray();
     setupGlobalHotkeys();
+    setupScreenshotHandlers();
+
     startBackend();
 
-    /* ================= IPC ================= */
-
+    /* ===== IPC ===== */
     ipcMain.on('close-window', () => app.quit());
-    ipcMain.on('restore-window', restoreFromCircle);
+    ipcMain.on('restore-window', () => restoreFromCircle());
+    ipcMain.on('minimize-window', () => minimizeToCircle());
 
-    // Handle circle dragging with relative movement
-    ipcMain.on('move-circle-relative', (event, deltaX, deltaY) => {
-        if (circleWindow) {
-            const [currentX, currentY] = circleWindow.getPosition();
-            circleWindow.setPosition(currentX + deltaX, currentY + deltaY);
-        }
-    });
-
-    // Handle step window dragging
-    ipcMain.on('move-step-window', (event, deltaX, deltaY) => {
-        if (mainWindow && mainWindow.isVisible()) {
-            const [currentX, currentY] = mainWindow.getPosition();
-            mainWindow.setPosition(currentX + deltaX, currentY + deltaY);
-        }
-    });
-
-    // 🔥 CLICK-THROUGH OVERLAY - Toggle mouse events
-    ipcMain.on('toggle-click-through', (event, ignoreMouseEvents) => {
+    ipcMain.on('toggle-click-through', (event, ignore) => {
         if (mainWindow) {
-            mainWindow.setIgnoreMouseEvents(ignoreMouseEvents, { forward: ignoreMouseEvents });
-            console.log(`🔄 Click-through toggled: ${ignoreMouseEvents ? '🔴 PASS-THROUGH' : '🟢 INTERACTIVE'}`);
+            mainWindow.setIgnoreMouseEvents(ignore, { forward: ignore });
+            console.log(`🔄 Click-through: ${ignore ? 'PASS-THROUGH' : 'INTERACTIVE'}`);
         }
     });
 
-    // 🔥 HIT-TEST - Check if position is over interactive element
-    ipcMain.on('check-interactive-area', (event, x, y) => {
-        if (mainWindow && mainWindow.webContents) {
-            mainWindow.webContents.send('request-hit-test', { x, y });
-        }
-    });
-
-    // 🔥 Response from renderer about whether element is interactive
-    ipcMain.on('hit-test-result', (event, isInteractive) => {
-        if (mainWindow) {
-            mainWindow.setIgnoreMouseEvents(!isInteractive, { forward: !isInteractive });
-            console.log(`🎯 Hit-test: ${isInteractive ? '🟢 INTERACTIVE' : '🔴 PASS-THROUGH'}`);
-        }
-    });
-
-    /* ======================================================
-       🔒 INVISIBILITY + FOREGROUND PROTECTION
-       ====================================================== */
-
-    // ❌ Block OS minimize (Alt+Tab / Win shortcuts)
     mainWindow.on('minimize', (e) => {
         e.preventDefault();
         if (!isMinimized) {
@@ -105,154 +101,351 @@ function createWindow() {
         }
     });
 
-    // 🔥 If focus lost (click outside / switch app)
     mainWindow.on('blur', () => {
         if (!isMinimized) {
-            // Stay invisible but force front
             mainWindow.show();
             mainWindow.setAlwaysOnTop(true, 'screen-saver');
         }
-        console.log('📌 Window blurred - global hotkeys remain active');
     });
+}
 
-    // ❌ Never allow OS hide
-    mainWindow.on('hide', () => {
-        if (!isMinimized) {
-            mainWindow.show();
+/* ================= START BACKEND ================= */
+function startBackend() {
+    const scriptPath = findMainPy();
+    if (!scriptPath) return;
+
+    const scriptDir = path.dirname(scriptPath);
+    const parentDir = path.dirname(scriptDir);
+    const pythonPath = process.platform === 'win32' ? 'python' : 'python3';
+
+    console.log(`📂 cwd: ${parentDir}`);
+    console.log(`📄 script: ${scriptPath}`);
+
+    // Kill any stale process on port 8000
+    try {
+        const { execSync } = require('child_process');
+        if (process.platform === 'win32') {
+            const out = execSync('netstat -ano | findstr :8000', { encoding: 'utf8' });
+            const pids = new Set();
+            out.split('\n').forEach(line => {
+                const parts = line.trim().split(/\s+/);
+                const pid = parts[parts.length - 1];
+                if (pid && pid !== '0' && !isNaN(pid)) pids.add(pid);
+            });
+            pids.forEach(pid => {
+                try {
+                    execSync(`taskkill /PID ${pid} /F`, { stdio: 'ignore' });
+                    console.log(`🧹 Killed stale process on port 8000 (PID ${pid})`);
+                } catch (_) {}
+            });
+        } else {
+            try { execSync("lsof -ti:8000 | xargs kill -9", { stdio: 'ignore' }); } catch (_) {}
+        }
+    } catch (_) {}
+
+    // Kill orphan python
+    try {
+        const { execSync } = require('child_process');
+        if (process.platform === 'win32') {
+            execSync('taskkill /F /IM python.exe', { stdio: 'ignore' });
+            console.log('🧹 Killed orphan python processes');
+        }
+    } catch (_) {}
+
+    pythonServer = spawn(pythonPath, [scriptPath], {
+        cwd: parentDir,
+        env: {
+            ...process.env,
+            PYTHONIOENCODING: 'utf-8',
+            PYTHONUTF8: '1'
         }
     });
+
+    pythonServer.stdout.on('data', d => { const s = d.toString().trim(); if (s) console.log(`Backend: ${s}`); });
+    pythonServer.stderr.on('data', d => { const s = d.toString().trim(); if (s) console.error(`Backend Error: ${s}`); });
+
+    let restartCount = 0;
+    const MAX_RESTARTS = 3;
+
+    pythonServer.on('close', (code) => {
+        console.log(`Backend exited: ${code}`);
+        if (code !== 0 && restartCount < MAX_RESTARTS) {
+            restartCount++;
+            console.log(`🔄 Restarting backend (${restartCount}/${MAX_RESTARTS}) in 5s...`);
+            setTimeout(startBackend, 5000);
+        } else if (restartCount >= MAX_RESTARTS) {
+            console.error('❌ Backend restarted too many times — giving up');
+        }
+    });
+
+    pythonServer.on('error', (err) => console.error('❌ Backend start failed:', err.message));
 }
 
-/* ======================================================
-   🔥 GLOBAL HOTKEYS - WORKS EVEN WHEN MOUSE AWAY
-   ====================================================== */
+/* ================= SCREENSHOT ================= */
+async function stealthScreenshot(region = 'full', options = {}) {
+    if (typeof options === 'string') options = { customPrompt: options };
+    const { customPrompt = null, returnImage = false } = options;
+
+    if (isProcessingScreenshot) return;
+
+    const wasVisible = mainWindow && mainWindow.isVisible();
+    const wasAlwaysOnTop = mainWindow && mainWindow.isAlwaysOnTop();
+
+    try {
+        isProcessingScreenshot = true;
+        console.log(`📸 Screenshot: ${region} (returnImage=${returnImage})`);
+
+        if (wasVisible && mainWindow) {
+            mainWindow.hide();
+            await new Promise(r => setTimeout(r, 220));
+        }
+
+        const primaryDisplay = screen.getPrimaryDisplay();
+        const { width, height } = primaryDisplay.size;
+
+        const sources = await desktopCapturer.getSources({
+            types: ['screen'],
+            thumbnailSize: { width, height },
+            fetchWindowIcons: false
+        });
+
+        if (!sources || !sources.length) throw new Error('No screen sources');
+
+        let source = sources.find(s => String(s.display_id) === String(primaryDisplay.id));
+        if (!source) source = sources[0];
+
+        const base64Image = source.thumbnail.toJPEG(92).toString('base64');
+
+        console.log(`📸 Captured: ${base64Image.length} bytes (~${Math.round(base64Image.length/1024)} KB)`);
+
+        lastScreenshot = { timestamp: Date.now(), image: base64Image, region };
+        screenshotHistory.push(lastScreenshot);
+        if (screenshotHistory.length > 20) screenshotHistory.shift();
+
+        if (wasVisible && mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.show();
+            if (wasAlwaysOnTop) mainWindow.setAlwaysOnTop(true, 'screen-saver');
+        }
+
+        // ===== CHAT ATTACHMENT MODE =====
+        if (returnImage) {
+            console.log('📸 Returning raw image to renderer');
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('screenshot-captured', {
+                    image: base64Image,
+                    region,
+                    timestamp: Date.now()
+                });
+            }
+            isProcessingScreenshot = false;
+            return;
+        }
+
+        // ===== SILENT ANALYZE MODE =====
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('screenshot-processing', {
+                status: 'processing',
+                message: '📸 Analyzing screenshot...',
+                region
+            });
+        }
+
+        const controller = new AbortController();
+        const to = setTimeout(() => controller.abort(), 30000);
+
+        try {
+            const response = await fetch('http://127.0.0.1:8000/api/screenshot-analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    image: base64Image,
+                    region,
+                    question: customPrompt || 'Analyze this screenshot and provide relevant insights for the interview',
+                    timestamp: Date.now()
+                }),
+                signal: controller.signal
+            });
+
+            clearTimeout(to);
+
+            if (!response.ok) {
+                const t = await response.text();
+                throw new Error(`HTTP ${response.status}: ${t}`);
+            }
+
+            const data = await response.json();
+
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('screenshot-result', {
+                    success: true,
+                    analysis: data.analysis || data.response || 'Analysis completed',
+                    timestamp: Date.now(),
+                    region
+                });
+                const analysisText = data.analysis || data.response || 'Screenshot analysis complete';
+                mainWindow.webContents.send('screenshot-transcript', { text: analysisText });
+            }
+        } catch (fetchErr) {
+            clearTimeout(to);
+            if (fetchErr.name === 'AbortError') throw new Error('Timed out after 30s');
+            throw fetchErr;
+        }
+    } catch (err) {
+        console.error('❌ Screenshot error:', err);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('screenshot-error', { message: err.message || 'Capture failed' });
+        }
+    } finally {
+        if (mainWindow && !mainWindow.isDestroyed() && wasVisible) {
+            if (!mainWindow.isVisible()) {
+                mainWindow.show();
+            }
+            if (wasAlwaysOnTop) {
+                mainWindow.setAlwaysOnTop(true, 'screen-saver');
+            }
+        }
+        isProcessingScreenshot = false;
+    }
+}
+
+/* ================= HOTKEYS ================= */
 function setupGlobalHotkeys() {
-    console.log("🌍 Registering ALL global hotkeys...");
-    
+    console.log("🌍 Registering hotkeys...");
     globalShortcut.unregisterAll();
-    
-    // ===== MODIFIER COMBINATIONS =====
-    
-    // Answer - Ctrl+Space
-    globalShortcut.register('Control+Space', () => {
-        console.log('⌨️ Global: Ctrl+Space → Answer');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'answer' });
+
+    /* ========== 4 PRIMARY HOTKEYS (as requested) ========== */
+
+    // 📋 Ctrl+Shift+X — Copy code block
+    globalShortcut.register('Control+Shift+X', () => {
+        console.log('📋 Ctrl+Shift+X → Copy code block');
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'copy-code' });
     });
-    
-    // Clear - Ctrl+Shift+C
-    globalShortcut.register('Control+Shift+C', () => {
-        console.log('⌨️ Global: Ctrl+Shift+C → Clear');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'clear' });
-    });
-    
-    // Chat Toggle - Ctrl+Alt+X
-    globalShortcut.register('Control+Alt+X', () => {
-        console.log('⌨️ Global: Ctrl+Alt+X → Chat');
+
+    // 💬 Ctrl+Shift+V — Open chat box
+    globalShortcut.register('Control+Shift+V', () => {
+        console.log('💬 Ctrl+Shift+V → Chat');
         mainWindow?.webContents.send('global-hotkey', { hotkey: 'chat' });
     });
-    
-    // ===== SINGLE KEY TOGGLES (NO MODIFIERS) =====
-    
-    // 🔥 Mic Toggle - M key (no modifier) - Changed from Ctrl+M to just M
+
+    // 📸 Ctrl+Shift+S — Screenshot
+    globalShortcut.register('Control+Shift+S', () => {
+        console.log('📸 Ctrl+Shift+S → Screenshot');
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'screenshot' });
+    });
+
+    // 💬 Ctrl+Space — Answer
+    globalShortcut.register('Control+Space', () => {
+        console.log('💡 Ctrl+Space → Answer');
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'answer' });
+    });
+
+    /* ========== EXTRA / OPTIONAL ========== */
+
+    // Region screenshot (bonus)
+    globalShortcut.register('Control+Shift+Z', () => {
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'screenshot' });
+    });
+
+    // Prev / Next code block (cycle when multiple exist)
+    globalShortcut.register('Control+Alt+Left', () => {
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'copy-code-prev' });
+    });
+    globalShortcut.register('Control+Alt+Right', () => {
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'copy-code-next' });
+    });
+
+    // Q&A navigation
+    globalShortcut.register('Control+Shift+,', () => {
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'prev-q' });
+    });
+    globalShortcut.register('Control+Shift+.', () => {
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'next-q' });
+    });
+
+    // Circle ↔ normal
+    globalShortcut.register('Control+H', () => {
+        if (isMinimized) restoreFromCircle();
+        else minimizeToCircle();
+    });
+
+    // Clear
+    globalShortcut.register('Control+Shift+C', () => {
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'clear' });
+    });
+
+    // Mic / System
     globalShortcut.register('Control+M', () => {
-    console.log('⌨️ Global: Ctrl+M → Mic Toggle');
-    mainWindow?.webContents.send('global-hotkey', { hotkey: 'mic' });
-});
-    
-    // 🔥 System Toggle - N key (no modifier) - Changed from Ctrl+N to just N
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'mic' });
+    });
     globalShortcut.register('Control+N', () => {
-    console.log('⌨️ Global: Ctrl+N → System Toggle');
-    mainWindow?.webContents.send('global-hotkey', { hotkey: 'system' });
-});
-    
-    // ===== MOVEMENT KEYS =====
-    
-    // Move Left - [ or Ctrl+Left
-    globalShortcut.register('[', () => {
-        console.log('⌨️ Global: [ → Move Left');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-left' });
+        mainWindow?.webContents.send('global-hotkey', { hotkey: 'system' });
     });
-    
-    globalShortcut.register('Control+Left', () => {
-        console.log('⌨️ Global: Ctrl+Left → Move Left');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-left' });
-    });
-    
-    // Move Right - ] or Ctrl+Right
-    globalShortcut.register(']', () => {
-        console.log('⌨️ Global: ] → Move Right');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-right' });
-    });
-    
-    globalShortcut.register('Control+Right', () => {
-        console.log('⌨️ Global: Ctrl+Right → Move Right');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-right' });
-    });
-    
-    // Move Up - Ctrl+Up OR Shift+Comma (<)
-    globalShortcut.register('Control+Up', () => {
-        console.log('⌨️ Global: Ctrl+Up → Move Up');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-up' });
-    });
-    
-    globalShortcut.register('<', () => {
-        console.log('⌨️ Global: < → Move Up');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-up' });
-    });
-    
-    // Move Down - Ctrl+Down OR Shift+Period (>)
-    globalShortcut.register('Control+Down', () => {
-        console.log('⌨️ Global: Ctrl+Down → Move Down');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-down' });
-    });
-    
-    globalShortcut.register('>', () => {
-        console.log('⌨️ Global: > → Move Down');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-down' });
-    });
-    
-    // ===== SCROLLING KEYS =====
-    
-    // Scroll Down - ArrowDown
-    globalShortcut.register('Down', () => {
-        console.log('⌨️ Global: Down Arrow → Scroll Down');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'scroll-down' });
-    });
-    
-    // Scroll Up - ArrowUp
-    globalShortcut.register('Up', () => {
-        console.log('⌨️ Global: Up Arrow → Scroll Up');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'scroll-up' });
-    });
-    
-    // Page Down
-    globalShortcut.register('PageDown', () => {
-        console.log('⌨️ Global: PageDown → Scroll Page Down');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'page-down' });
-    });
-    
-    // Page Up
-    globalShortcut.register('PageUp', () => {
-        console.log('⌨️ Global: PageUp → Scroll Page Up');
-        mainWindow?.webContents.send('global-hotkey', { hotkey: 'page-up' });
-    });
-    
-    console.log('✅ All global hotkeys registered');
-    console.log('   📋 Hotkey Summary:');
-    console.log('      Ctrl+Space     → Answer');
-    console.log('      Ctrl+Shift+C   → Clear');
-    console.log('      Ctrl+Alt+X     → Chat');
-    console.log('      M              → Mic Toggle');
-    console.log('      N              → System Toggle');
-    console.log('      [ / Ctrl+Left  → Move Left');
-    console.log('      ] / Ctrl+Right → Move Right');
-    console.log('      < / Ctrl+Up    → Move Up');
-    console.log('      > / Ctrl+Down  → Move Down');
+
+    // Overlay movement
+    globalShortcut.register('Control+Shift+Left',  () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-left'  }));
+    globalShortcut.register('Control+Shift+Right', () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-right' }));
+    globalShortcut.register('Control+Shift+Up',    () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-up'    }));
+    globalShortcut.register('Control+Shift+Down',  () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'move-down'  }));
+
+    // Answer scrolling
+    globalShortcut.register('Control+Up',   () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'answer-scroll-up'   }));
+    globalShortcut.register('Control+Down', () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'answer-scroll-down' }));
+
+    // Page scroll
+    globalShortcut.register('Down',     () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'scroll-down' }));
+    globalShortcut.register('Up',       () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'scroll-up' }));
+    globalShortcut.register('PageDown', () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'page-down' }));
+    globalShortcut.register('PageUp',   () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'page-up' }));
+
+    console.log('✅ Hotkeys registered:');
+    console.log('   Ctrl+Shift+X   → 📋 Copy code block');
+    console.log('   Ctrl+Shift+V   → 💬 Chat box');
+    console.log('   Ctrl+Shift+S   → 📸 Screenshot');
+    console.log('   Ctrl+Space     → 💡 Answer');
 }
 
-/* ======================================================
-   CIRCLE WINDOW (INVISIBLE)
-   ====================================================== */
+/* ================= SCREENSHOT IPC ================= */
+function setupScreenshotHandlers() {
+    ipcMain.on('take-screenshot', (e, region) => stealthScreenshot(region || 'full'));
+    ipcMain.on('capture-for-chat', () => {
+        console.log('📸 capture-for-chat requested');
+        stealthScreenshot('full', { returnImage: true });
+    });
+    ipcMain.on('toggle-auto-answer', () => {
+        autoAnswerEnabled = !autoAnswerEnabled;
+        mainWindow?.webContents.send('auto-answer-toggled', { enabled: autoAnswerEnabled });
+    });
+    ipcMain.handle('get-last-screenshot', async () => lastScreenshot);
+    ipcMain.handle('get-screenshot-history', async () => screenshotHistory);
+    ipcMain.on('clear-screenshot-history', () => { screenshotHistory = []; });
+    ipcMain.on('screenshot-transcript', (e, data) => {
+        mainWindow?.webContents.send('screenshot-transcript', data);
+    });
+}
+
+/* ================= TRAY ================= */
+function createTray() {
+    const icon = nativeImage.createFromDataURL(LOGO_BASE64);
+    tray = new Tray(icon);
+
+    const menu = Menu.buildFromTemplate([
+        { label: '📋 Copy Code Block (Ctrl+Shift+X)', click: () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'copy-code' }) },
+        { label: '💬 Chat Box (Ctrl+Shift+V)', click: () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'chat' }) },
+        { label: '📸 Screenshot (Ctrl+Shift+S)', click: () => stealthScreenshot('full') },
+        { label: '💡 Answer (Ctrl+Space)', click: () => mainWindow?.webContents.send('global-hotkey', { hotkey: 'answer' }) },
+        { type: 'separator' },
+        { label: '🔄 Toggle Circle / Normal (Ctrl+H)', click: () => isMinimized ? restoreFromCircle() : minimizeToCircle() },
+        { type: 'separator' },
+        { label: '🚀 Show App', click: restoreFromCircle },
+        { label: '❌ Quit', click: () => app.quit() }
+    ]);
+
+    tray.setToolTip('Interview Helper');
+    tray.setContextMenu(menu);
+    tray.on('click', () => isMinimized ? restoreFromCircle() : mainWindow.show());
+}
+
+/* ================= CIRCLE WINDOW ================= */
 function createCircleWindow(x, y) {
     if (circleWindow) {
         circleWindow.focus();
@@ -260,24 +453,18 @@ function createCircleWindow(x, y) {
     }
 
     circleWindow = new BrowserWindow({
-        width: 60,
-        height: 60,
-        x,
-        y,
+        width: 60, height: 60, x, y,
         frame: false,
         transparent: true,
         backgroundColor: '#00000000',
-
         alwaysOnTop: true,
         skipTaskbar: true,
-
         resizable: false,
         movable: false,
         minimizable: false,
         maximizable: false,
         fullscreenable: false,
         show: false,
-
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
@@ -287,22 +474,14 @@ function createCircleWindow(x, y) {
 
     circleWindow.setContentProtection(true);
     circleWindow.setAlwaysOnTop(true, 'screen-saver');
-
     circleWindow.loadFile('circle.html');
 
-    circleWindow.on('closed', () => {
-        circleWindow = null;
-    });
-
+    circleWindow.on('closed', () => { circleWindow = null; });
     return circleWindow;
 }
 
-/* ======================================================
-   MINIMIZE / RESTORE (UPDATED - TOP CENTER)
-   ====================================================== */
 function minimizeToCircle() {
     if (!mainWindow) return;
-
     isMinimized = true;
     mainWindow.hide();
 
@@ -310,72 +489,22 @@ function minimizeToCircle() {
     const circleX = Math.floor(width / 2) - 30;
     const circleY = 20;
 
-    const circleWin = createCircleWindow(circleX, circleY);
-    circleWin.show();
-    circleWin.focus();
+    const cw = createCircleWindow(circleX, circleY);
+    cw.show();
+    cw.focus();
+    console.log('⭕ Minimized to circle');
 }
 
 function restoreFromCircle() {
     if (!mainWindow) return;
-
     isMinimized = false;
-
     mainWindow.show();
     mainWindow.setAlwaysOnTop(true, 'screen-saver');
-
-    if (circleWindow) {
-        circleWindow.hide();
-    }
+    if (circleWindow) circleWindow.hide();
+    console.log('🚀 Restored from circle');
 }
 
-/* ======================================================
-   TRAY (UNCHANGED)
-   ====================================================== */
-function createTray() {
-    const icon = nativeImage.createFromDataURL(LOGO_BASE64);
-    tray = new Tray(icon);
-
-    const contextMenu = Menu.buildFromTemplate([
-        {
-            label: 'Show Interview Helper',
-            click: () => isMinimized ? restoreFromCircle() : mainWindow.show()
-        },
-        {
-            label: 'Minimize to Circle',
-            click: minimizeToCircle
-        },
-        { type: 'separator' },
-        {
-            label: 'Quit',
-            click: () => app.quit()
-        }
-    ]);
-
-    tray.setToolTip('Interview Helper');
-    tray.setContextMenu(contextMenu);
-
-    tray.on('click', () => {
-        if (isMinimized) restoreFromCircle();
-        else mainWindow.show();
-    });
-}
-
-/* ======================================================
-   BACKEND (UNCHANGED)
-   ====================================================== */
-function startBackend() {
-    const pythonPath = process.platform === 'win32' ? 'python' : 'python3';
-    const scriptPath = path.join(__dirname, 'main.py');
-
-    pythonServer = spawn(pythonPath, [scriptPath]);
-
-    pythonServer.stdout.on('data', d => console.log(`Backend: ${d}`));
-    pythonServer.stderr.on('data', d => console.error(`Backend Error: ${d}`));
-}
-
-/* ======================================================
-   APP LIFECYCLE (UNCHANGED)
-   ====================================================== */
+/* ================= APP LIFECYCLE ================= */
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
@@ -386,15 +515,11 @@ app.on('window-all-closed', () => {
 });
 
 app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-        createWindow();
-    }
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
-// 🔥 Clean up global shortcuts on quit
 app.on('will-quit', () => {
     globalShortcut.unregisterAll();
-    console.log('🧹 Global hotkeys unregistered');
 });
 
 app.on('before-quit', () => {

@@ -183,23 +183,40 @@
         <section class="step step-4 step-dark"></section>
       </div>
 
-      <!-- ====== HISTORY TAB ====== -->
-      <div class="tab-panel" data-panel="history">
-        <section>
-          <h2 class="section-title">Past Sessions</h2>
-          <p class="helper-text">
-            Select a saved session to view history and continue chatting.
-          </p>
+     <!-- ====== HISTORY TAB ====== -->
+<div class="tab-panel" data-panel="history">
+  <section>
+    <h2 class="section-title">Past Sessions</h2>
+    <p class="helper-text">
+      View a past session, reopen it, or delete it.
+    </p>
 
-          <div class="history-layout">
-            <div class="session-list" id="sessionList"></div>
-            <div class="session-detail">
-              <div id="sessionMeta" class="session-meta"></div>
-              <div id="sessionMessages" class="message-list"></div>
-            </div>
-          </div>
-        </section>
+    <div class="history-layout">
+      <!-- LEFT: session list -->
+      <div class="session-list" id="sessionList">
+        <div class="session-empty">Loading…</div>
       </div>
+
+      <!-- RIGHT: detail pane -->
+      <div class="session-detail">
+        <div id="sessionDetailEmpty" class="session-detail-empty">
+          Select a session to view its Q&amp;A history.
+        </div>
+
+        <div id="sessionDetailBody" style="display:none;">
+          <div id="sessionMeta" class="session-meta"></div>
+
+          <div class="session-actions">
+            <button id="btnReopenSession" class="primary-btn small">Reopen Session</button>
+            <button id="btnDeleteSession" class="danger-btn small">Delete</button>
+          </div>
+
+          <div id="sessionMessages" class="message-list"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
     </main>
   </div>
 
@@ -208,14 +225,13 @@
   <!-- Top toolbar (draggable) -->
   <div id="aiToolbar" class="ai-overlay-bar drag-region">
     <div class="ai-overlay-left">
-      <button id="btnMicIcon" class="circle-icon is-on no-drag" title="Mic on/off">🎙️</button>
-      <button id="btnSystemIcon" class="circle-icon is-off no-drag" title="System audio on/off">💻</button>
+  <button id="btnMicIcon" class="circle-icon is-on no-drag" aria-label="Mic on/off">🎙️</button>
+  <button id="btnSystemIcon" class="circle-icon is-off no-drag" aria-label="System audio on/off">💻</button>
 
-        <button id="toolbarAIHelp" class="pill filled no-drag">AI Help</button>
-        <button id="toolbarChat" class="pill no-drag">Chat</button>
-           <button id="toolbarScreenshot" class="pill screenshot-btn no-drag">Screenshot</button>
-    </div>
-
+  <button id="toolbarAIHelp" class="pill filled no-drag">AI Help</button>
+  <button id="toolbarChat" class="pill no-drag">Chat</button>
+  <button id="toolbarScreenshot" class="pill screenshot-btn no-drag">Screenshot</button>
+</div>
     <div class="ai-overlay-right">
       <span id="toolbarDuration" class="aihelp-clock no-drag">Listening 00:00</span>
       <button id="btnToolbarCancel" class="square-icon no-drag">Cancel</button>
@@ -231,11 +247,22 @@
     </div>
 
     <div class="control-row">
-      <button id="btnAnswer" class="primary-btn small">Answer</button>
-      <button id="btnClear" class="secondary-btn small">Clear Text</button>
-      <button id="btnBackToSettings" class="secondary-btn small">Back</button>
-      <span id="durationLabel" class="aihelp-clock">Listening 00:00</span>
-    </div>
+  <!-- Prev / Next navigation — ABOVE Answer button -->
+  <div class="qa-nav-strip">
+    <button id="btnPrevQ" class="qa-nav-btn" aria-label="Previous question" title="">
+      &#8249;
+    </button>
+    <span id="qaCounter" class="qa-counter">0 / 0</span>
+    <button id="btnNextQ" class="qa-nav-btn" aria-label="Next question" title="">
+      &#8250;
+    </button>
+  </div>
+
+  <button id="btnAnswer" class="primary-btn small">Answer</button>
+  <button id="btnClear" class="secondary-btn small">Clear Text</button>
+  <button id="btnBackToSettings" class="secondary-btn small">Back</button>
+  <span id="durationLabel" class="aihelp-clock">Listening 00:00</span>
+</div>
 
     <div class="qa-card">
       <div class="qa-question-row">
@@ -252,19 +279,24 @@
       </div>
     </div>
 
-    <div class="chat-row" id="chatRow">
-      <input
-        id="chatInput"
-        class="chat-input"
-        type="text"
-        placeholder="Type your question here and press Enter…"
-      />
-      <button id="chatSend" class="primary-btn small">Send</button>
-    </div>
-
-    <!-- Custom resize handle -->
-    <div class="ai-panel-resize"><div class="ai-panel-resize-symbol"></div></div>
+    <!-- ===== FLOATING CHAT BAR (screenshot attachment mode) ===== -->
+<div id="chatBar" class="chat-bar" style="display:none;">
+  <div id="chatAttachmentPreview" class="chat-attachment" style="display:none;">
+    <img id="chatAttachmentThumb" class="chat-attachment-thumb" alt="Screenshot attachment" />
+    <button id="chatAttachmentRemove" class="chat-attachment-remove" aria-label="Remove attachment" title="">✕</button>
+    <span class="chat-attachment-label">Screenshot attached</span>
   </div>
+  <div class="chat-bar-row">
+    <input
+      id="chatInput"
+      class="chat-input"
+      type="text"
+      placeholder="Ask about the screenshot…"
+    />
+    <button id="chatSend" class="primary-btn small">Send</button>
+    <button id="chatBarClose" class="square-icon" aria-label="Close chat">✕</button>
+  </div>
+</div>
 
   <script src="renderer.js"></script>
   <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAHVSURBVHgB7dqxS9tRFMfxT5PVQNpc3CaLSBcHcQrUjv0DnCq4dGgROpQOQQp1bBUE8S8QCh3rP9DBwRyKoLh1aKGDCCEdSvP6ejkERB2SPH3e930fPyBcIAT57nv33j13F0mSJEmSJEmSJEmSJEmSJEmSJEmSJEmSJEmSJEmSJEmSJEmSJEmSJEmSJEmSJEmSJEmSpKyJhT6APLg4XYp/CX0QeQq4Wj3Tun3Vj8PZy5GAq9WjeHJxmpJm6INYr9H/9PRtf3nu65AA1yU2Z8Lciz/j8PvA20//Kg0mWv+c3v/29K5v3I0NWg3//7VpfgogSZKkLDAQEgKBkBAIhIRAIJgHAAHCTAEoBEDgGEBgeGJp1m3QlTIAEARa/wzH/v35Z/51JwSC6gUAQcC5gBBQn1AAgMA9oFEIhIJAoBmJQJ2AgWYk9IMABppmgICAsRVAQNA6BIy9AgSEnwICghbA9AMAAM1CAIBmZQDQ6H+AUd0KIAIAzZwAQDMrgIAN8AAGum6DQKMOEAQDAQI2aAIBQeMQCASCVsCAt0GXK4CAgOZlwL8CCAgYEAKBQCAIBAKQ1RBYGj5uDoSMQDA5BKL7i9PG2+Pb1gOP/6OqA2DqL84a33/Xrvv/3mU8d0Bw99Bo9f+/S3jugODuvtHu/36XLw6fU8UReP4/nff4btoHwN8h8P77XK9F4M+T4LX7/68NAAThv0FA+6+g7AUAYnQINAyAQCDoCAJ+IxL3IOggBIJGIUDgPoAGAQDCCBEA3w6g6zYAn2qMBQDqG5r3/wEl5PGhx7+yzAAAAABJRU5ErkJggg==">
@@ -276,3 +308,4 @@
     </div>
     <!-- rest of content -->
 </div>
+
